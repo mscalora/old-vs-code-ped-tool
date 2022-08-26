@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+
+import argparse
+from os import sep
+import re
+import sys
+
+LINE_SUB = 's'
+FILE_SUB = 'S'
+LINE_FIXED_SUB = 'f'
+FILTER = 'g'
+LINE_FILTER = 'G'
+EXCLUDE = 'x'
+LINE_EXCLUDE = 'X'
+LINE_ONLY = 'o'
+FILE_ONLY = 'O'
+LINE_REMOVE = 'r'
+FILE_REMOVE = 'R'
+LINE_UPPER = 'u'
+LINE_LOWER = 'l'
+LINE_TITLE = 't'
+FILE_UPPER = 'U'
+FILE_LOWER = 'L'
+FILE_TITLE = 'T'
+ALL_FILTERS = [FILTER, LINE_FILTER, EXCLUDE, LINE_EXCLUDE, LINE_ONLY, LINE_REMOVE]
+
+EPILOG = '''
+<mark-over>Commands:
+
+    s - regexp substitution within lines
+    S - regexp substitution across lines, regexp match can span lines† 
+    f - fixed string substitution within lines
+    g - [grep] regexp filter lines, keep only lines with one more more matches
+    G - regexp filter lines, keep only lines that completely match
+    x - [exclude] regexp filter lines, keep only lines WITHOUT one more more matches
+    X - regexp filter lines, keep only lines that DO NOT completely match
+    o - [only] regexp filter lines keeping only the matching parts of lines
+    O - Only keep part(s) of the file that matches the regexp†
+    r - regexp filter lines removing only the matching parts of lines
+    R - Only remove part(s) of the file that matches the regexp†
+    l - transform match to lower case by line
+    u - transform match to upper case by line
+    t - transform match to title case by line
+    L - transform match to lower case across lines†
+    U - transform match to upper case across lines†
+    T - transform match to title case across lines†
+
+Commands are processed in the order they appear, usually
+consisting of a one character operation code and parameters
+delimited by a slash or other punctuation, for example:
+
+  s/this/that/
+
+would invoke the (s)ubstitution operation which would replace
+all occurrences of `this` with `that`. The first parameter is a
+regular expression and the second is the replacement string. Though
+similar to the venerable sed command, the regular expressions are
+python compatible, see: https://tinyurl.com/py3-re-syntax . 
+
+Delimiters can be any punctuation character so no meta-escaping is needed,
+for example to change all slashes to back slashes you could use:
+
+  s:/:\\:
+
+Also, the trailing delimiter is optional, the following is identical to 
+the preceding:
+
+  s:/:\\
+
+Use of single quotes is recommended to avoid shell pattern and meta-character  
+issues:
+
+  $> ped -f input 's:/:\\'
+
+† you will often want to use the --dotall option so that a dot `.` will match any
+character including line separators like \\r and \\n.
+
+'''.strip()
+
+DESCRIPTION = 'make edit to text file, line endings will be normalized to the os convention'
+def main():
+  parser = argparse.ArgumentParser(description=DESCRIPTION, epilog=EPILOG, formatter_class=CustomFormatter)
+  parser.add_argument('-f', '--filepath', metavar='FILE', dest='path', action='store', type=str, nargs=1, 
+      default='-', help='file to edit, `-` for stdin')
+  parser.add_argument('commands', metavar='COMMAND', type=str, nargs='+', help='edit command')
+  parser.add_argument('-i', '--ignore-case', dest='insensitive', action='store_const', default=0, 
+      const=re.IGNORECASE, help='case insensitive matching')
+  parser.add_argument('-n', '--normalize', dest='normalize', action='store_true', default=False, 
+      help='normalize line endings, even when using multiline')
+  parser.add_argument('-m', '--multiline', dest='multiline', action='store_const', default=False, 
+      const=re.MULTILINE, help=r'`^` and `$` match beginning and end of lines, \A and \Z match beginning and end of file')
+  parser.add_argument('-d', '--dotall', dest='dotall', action='store_const', default=0, 
+      const=re.DOTALL, help='dot `.` will match any character including line endings')
+  parser.add_argument('-a', '--ascii', dest='ascii', action='store_const', default=0, 
+      const=re.ASCII, help=r'ascii mode where \w, \W, \b, \B, \d, \D, \s and \S only match ASCII characters')
+  args = parser.parse_args()
+
+  contents = sys.stdin.read() if args.path == '-' else get_file_contents(args.path[0])
+  output = contents
+
+  for item in args.commands:
+    op = item[0]
+    sep = item[1]
+    if op == FILE_SUB or op == FILE_REMOVE:
+      output = file_sub(args, output, item, op, sep)
+    elif op == FILE_ONLY:
+      output = file_only(args, output, item, op, sep)
+    elif op == LINE_SUB or op == LINE_FIXED_SUB:
+      output = line_sub(args, output, item, op, sep)
+    elif op in ALL_FILTERS:
+      output = filter_lines(args, output, item, op, sep)
+    elif op in [LINE_UPPER, LINE_LOWER, LINE_TITLE]:
+      output = xform_lines(args, output, item, op, sep)
+    elif op in [FILE_UPPER, FILE_LOWER, FILE_TITLE]:
+      output = xform_file(args, output, item, op, sep)
+    else:
+      raise ValueError(f'Unknown command: "{item}" from the "{item}" command')
+
+  print(output)
+
+def xform_file(args, data, item, op, sep='/'):
+  data = '\n'.join(data.splitlines()) if args.normalize else data
+  flags = args.insensitive | args.multiline | args.ascii | args.dotall
+  e = item[2:].split(sep,1)[0]
+  return re.sub(e, lambda m: xform(m, op), data, flags=flags)
+
+def xform_lines(args, data, item, op, sep='/'):
+  flags = args.insensitive | args.multiline | args.ascii | args.dotall
+  e = item[2:].split(sep,1)[0]
+  return '\n'.join([re.sub(e, lambda m: xform(m, op), line, flags=flags) for line in data.splitlines()])
+
+def xform(match, op):
+  if op == 'u' or op == 'U':
+    return match[0].upper()
+  elif op == 'l' or op == 'L':
+    return match[0].lower()
+  elif op == 't' or op == 'T':
+    return match[0].title()
+  else: 
+    raise ValueError(f'Unknown command: "{op}"')
+
+def filter_lines(args, data, item, op, sep='/'):
+  flags = args.insensitive | args.multiline | args.ascii | args.dotall
+  e = item[2:].split(sep,1)[0]
+  out = []
+  for line in data.splitlines():
+    if op == FILTER:
+      if re.search(e, line, flags=flags): out.append(line) 
+    elif op == LINE_FILTER:
+      if re.fullmatch(e, line, flags=flags): out.append(line)
+    elif op == EXCLUDE:
+      if not re.search(e, line, flags=flags): out.append(line)
+    elif op == LINE_EXCLUDE:
+      if not re.fullmatch(e, line, flags=flags): out.append(line)
+    elif op == LINE_ONLY:
+      matches = list(re.finditer(e, line, flags=flags))
+      if len(matches):
+        out.append(''.join([match[0] for match in matches]))
+    elif op == LINE_REMOVE:
+      out.append(re.sub(e, '', line, flags=flags))
+    else:
+      raise ValueError(f'Unknown command: "{op}" from the "{item}" command')
+  return '\n'.join(out)
+
+def line_sub(args, data, item, op, sep='/'):
+  flags = args.insensitive | args.multiline | args.ascii | args.dotall
+  (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
+  if (op == LINE_FIXED_SUB):
+    e = re.escape(e)
+    r = re.escape(r)
+  return '\n'.join([re.sub(e, r, line, flags=flags) for line in data.splitlines()])
+
+def file_sub(args, data, item, op, sep='/'):
+  data = '\n'.join(data.splitlines()) if args.normalize else data
+  flags = args.insensitive | args.multiline | args.ascii | args.dotall
+  if (op == 'R'):
+    e = item[2:].split(sep,1)[0]
+    r = ''
+  else:
+    (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
+  return re.sub(e, r, data, flags=flags)
+
+def file_only(args, data, item, op, sep='/'):
+  data = '\n'.join(data.splitlines()) if args.normalize else data
+  flags = args.insensitive | args.multiline | args.ascii | args.dotall
+  e = item[2:].split(sep,1)[0]
+  matches = list(re.finditer(e, data, flags=flags))
+  out = ''
+  if len(matches):
+    out = ''.join([match[0] for match in matches])
+  return ''.join(out)
+
+def get_file_contents(path):
+  f = open(path, encoding="utf-8")
+  data = f.read()
+  f.close()
+  return data
+
+def get_file_lines(path):
+  f = open(path, encoding="utf-8")
+  data = f.readlines()
+  f.close()
+  return data
+
+class CustomFormatter(argparse.HelpFormatter):
+  def _flow(self, text):
+    lines = text.splitlines()
+    new_text = lines[0]
+    last = True
+    for line in lines[1:]:
+      cur = line.strip() != '' and line[0] != ' '
+      new_text += (' ' if last and cur else '\n') + line
+      last = cur
+    return new_text
+
+
+  def _format_text(self, text):
+    import textwrap
+    text_width = max(self._width - self._current_indent, 11)
+    indent = ' ' * self._current_indent
+    if '<mark-over>' in text:
+      lines = []
+      for line in self._flow(text).splitlines():
+        line = re.sub(r'<mark-over>', '', line)
+        if line.strip() == '':
+          lines.append(line)
+        elif line[0] == ' ':
+          spaces = (len(line) - len(line.lstrip()))
+          lines = lines + textwrap.wrap(line.lstrip(), text_width, initial_indent=' '*spaces, subsequent_indent=' '*spaces*2)
+        else:
+          lines = lines + textwrap.wrap(line, text_width, initial_indent=indent, subsequent_indent=indent)
+      return '\n'.join(lines) + '\n\n'  
+
+if __name__ == '__main__':
+  main()

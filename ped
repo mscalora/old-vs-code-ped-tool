@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
-from os import sep
+import datetime
+import os
 import re
 import sys
 
@@ -17,11 +18,13 @@ FILE_ONLY = 'O'
 LINE_REMOVE = 'r'
 FILE_REMOVE = 'R'
 LINE_UPPER = 'u'
-LINE_LOWER = 'l'
-LINE_TITLE = 't'
 FILE_UPPER = 'U'
+LINE_LOWER = 'l'
 FILE_LOWER = 'L'
+LINE_TITLE = 't'
 FILE_TITLE = 'T'
+LINE_CAPITALIZE = 'c'
+FILE_CAPITALIZE = 'C'
 ALL_FILTERS = [FILTER, LINE_FILTER, EXCLUDE, LINE_EXCLUDE, LINE_ONLY, LINE_REMOVE]
 
 EPILOG = '''
@@ -29,7 +32,7 @@ EPILOG = '''
 
     s - regexp substitution within lines
     S - regexp substitution across lines, regexp match can span lines† 
-    f - fixed string substitution within lines
+    f - fixed string substitution within lines (shorthand for `s` & -F)
     g - [grep] regexp filter lines, keep only lines with one more more matches
     G - regexp filter lines, keep only lines that completely match
     x - [exclude] regexp filter lines, keep only lines WITHOUT one more more matches
@@ -39,11 +42,13 @@ EPILOG = '''
     r - regexp filter lines removing only the matching parts of lines
     R - Only remove part(s) of the file that matches the regexp†
     l - transform match to lower case by line
-    u - transform match to upper case by line
-    t - transform match to title case by line
     L - transform match to lower case across lines†
+    u - transform match to upper case by line
     U - transform match to upper case across lines†
+    t - transform match to title case by line
     T - transform match to title case across lines†
+    c - transform match to a capitalized sentence by line
+    C - transform match to a capitalized sentence across lines†
 
 Commands are processed in the order they appear, usually
 consisting of a one character operation code and parameters
@@ -51,51 +56,103 @@ delimited by a slash or other punctuation, for example:
 
   s/this/that/
 
-would invoke the (s)ubstitution operation which would replace
+would invoke the `s` for substitution operation which would replace
 all occurrences of `this` with `that`. The first parameter is a
 regular expression and the second is the replacement string. Though
 similar to the venerable sed command, the regular expressions are
 python compatible, see: https://tinyurl.com/py3-re-syntax . 
 
 Delimiters can be any punctuation character so no meta-escaping is needed,
-for example to change all slashes to back slashes you could use:
+for example to change all slashes to underscores you could use:
 
-  s:/:\\:
+  s:/:_:
 
 Also, the trailing delimiter is optional, the following is identical to 
 the preceding:
 
-  s:/:\\
+  s:/:_
 
 Use of single quotes is recommended to avoid shell pattern and meta-character  
 issues:
 
-  $> ped -f input 's:/:\\'
+  $> ped -f input 's:$:_'
+
+The substitution command with a uppercase `S` can use patterns that span lines, 
+so if you wanted to change Fred Flintstone to Barney Rubble even if Fred was 
+at the end of one line and Flintstone was at the beginning of the next you might
+use:
+
+  $> ped -f story.txt 'S/Fred(\s+)Flintstone/Barney\\1Rubble'
+
+Explanations: \\s matches any white space character, \\s+ matches one or more
+whitespace, e.g. a space at the end of the line AND the line ending character(s)
+AND any indentation on the next line. Using \\1 in the replacement preserves whatever
+whitespace existed between Fred and Flintstone.
+
+The fixed `f` command is shorthand for `s` with the --fixed or -F option. The pattern
+is treated as a literal string, not a regular expression. All of these examples are
+equivalent:
+
+  $> ped -f story.txt 'f/./!/'
+  $> ped -f story.txt --fixed 's/./!/'
+  $> ped -f story.txt 's/\\./!/'
+
+Filtering
+
+The `g`, `G`, `x`, `X`, `o` filter text line by line:
+
+  `g` - keep only lines that have a match anywhere on the line (like egrep)
+  `G` - keep only lines that completely match (excluding the line endings \\n and/or \\r) (like egrep -x)
+  `x` - keep only lines that DON'T have a match anywhere on the line (like egrep -v)
+  `X` - keep only lines that DON'T completely match (excluding the line endings \\n and/or \\r) (like egrep -v -x)
+  `o` - keep only the part(s) of lines that match, lines with no match are eliminated. (like egrep -o‡)
+
+Removing matches 
+
+`r` will remove matches within a line, `R` will remove matches even if patterns span lines. These 
+commands are shorthand for for `s` and `S` with an empty replacement string.
+
+Case changing commands
+
+`l`, `L`, `u`, `U`, `t`, `T` replace matches with a lowercase, uppercase, title case 
+and capitalized sentence transformation of the matched text. The upper case versions 
+can match text across lines. Consult official python documentation for the technical 
+specification for each of these operations. See: https://docs.python.org/3/library/stdtypes.html#string-methods
+
+  $> ped -f story.txt -i 'U/fred\s+flintstone/'
 
 † you will often want to use the --dotall option so that a dot `.` will match any
 character including line separators like \\r and \\n.
 
+‡ there is a subtle difference, egrep -o will create multiple lines of output for multiple matches on
+the same line
 '''.strip()
 
 DESCRIPTION = 'make edit to text file, line endings will be normalized to the os convention'
 def main():
   parser = argparse.ArgumentParser(description=DESCRIPTION, epilog=EPILOG, formatter_class=CustomFormatter)
-  parser.add_argument('-f', '--filepath', metavar='FILE', dest='path', action='store', type=str, nargs=1, 
+  parser.add_argument('-f', '--filepath', metavar='FILE', dest='path', action='store', type=str, 
       default='-', help='file to edit, `-` for stdin')
   parser.add_argument('commands', metavar='COMMAND', type=str, nargs='+', help='edit command')
+  parser.add_argument('-e', '--in-place', dest='inplace', action='store_true', default=False, 
+      help='edit in place, update source file while making backup')
   parser.add_argument('-i', '--ignore-case', dest='insensitive', action='store_const', default=0, 
       const=re.IGNORECASE, help='case insensitive matching')
   parser.add_argument('-n', '--normalize', dest='normalize', action='store_true', default=False, 
       help='normalize line endings, even when using multiline')
+  parser.add_argument('-F', '--fixed', dest='fixed', action='store_true', default=False, 
+      help='treat regular expression as a fixed string by quoting all meta char')
   parser.add_argument('-m', '--multiline', dest='multiline', action='store_const', default=False, 
       const=re.MULTILINE, help=r'`^` and `$` match beginning and end of lines, \A and \Z match beginning and end of file')
   parser.add_argument('-d', '--dotall', dest='dotall', action='store_const', default=0, 
       const=re.DOTALL, help='dot `.` will match any character including line endings')
   parser.add_argument('-a', '--ascii', dest='ascii', action='store_const', default=0, 
       const=re.ASCII, help=r'ascii mode where \w, \W, \b, \B, \d, \D, \s and \S only match ASCII characters')
+  parser.add_argument('-b', '--backup-path', metavar='DIR', dest='backup_dir', action='store', type=str, nargs=1,
+      default='~/.ped-backups', help='backup directory')
   args = parser.parse_args()
 
-  contents = sys.stdin.read() if args.path == '-' else get_file_contents(args.path[0])
+  contents = sys.stdin.read() if args.path == '-' else get_file_contents(args.path)
   output = contents
 
   for item in args.commands:
@@ -109,24 +166,41 @@ def main():
       output = line_sub(args, output, item, op, sep)
     elif op in ALL_FILTERS:
       output = filter_lines(args, output, item, op, sep)
-    elif op in [LINE_UPPER, LINE_LOWER, LINE_TITLE]:
+    elif op in [LINE_UPPER, LINE_LOWER, LINE_TITLE, LINE_CAPITALIZE]:
       output = xform_lines(args, output, item, op, sep)
-    elif op in [FILE_UPPER, FILE_LOWER, FILE_TITLE]:
+    elif op in [FILE_UPPER, FILE_LOWER, FILE_TITLE, FILE_CAPITALIZE]:
       output = xform_file(args, output, item, op, sep)
     else:
       raise ValueError(f'Unknown command: "{item}" from the "{item}" command')
 
-  print(output)
+  if args.inplace:
+    backup_dir = os.path.expanduser(args.backup_dir)
+    if not os.path.isdir(backup_dir):
+      os.makedirs(backup_dir)
+    if not os.path.isdir(backup_dir):
+      raise NotADirectoryError(f'Backup dir does not exist: {backup_dir}')
+    backup_name = os.path.basename(args.path)
+    ts = datetime.datetime.now().isoformat(timespec="seconds")
+    backup_name = re.sub(r'((\.[^.]+)?$)', f'-{ts}\\1', backup_name, 1)
+    backup_path = os.path.join(backup_dir, backup_name)
+    with open(backup_path, 'w', encoding='utf-8') as f:
+        f.write(contents)
+    with open(args.path, 'w', encoding='utf-8') as f:
+        f.write(output)
+  else:
+    print(output)
 
 def xform_file(args, data, item, op, sep='/'):
   data = '\n'.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
+  e = re.escape(e) if args.fixed else e
   return re.sub(e, lambda m: xform(m, op), data, flags=flags)
 
 def xform_lines(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
+  e = re.escape(e) if args.fixed else e
   return '\n'.join([re.sub(e, lambda m: xform(m, op), line, flags=flags) for line in data.splitlines()])
 
 def xform(match, op):
@@ -136,12 +210,15 @@ def xform(match, op):
     return match[0].lower()
   elif op == 't' or op == 'T':
     return match[0].title()
+  elif op == 'c' or op == 'C':
+    return match[0].capitalize()
   else: 
     raise ValueError(f'Unknown command: "{op}"')
 
 def filter_lines(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
+  e = re.escape(e) if args.fixed else e
   out = []
   for line in data.splitlines():
     if op == FILTER:
@@ -165,25 +242,25 @@ def filter_lines(args, data, item, op, sep='/'):
 def line_sub(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
-  if (op == LINE_FIXED_SUB):
-    e = re.escape(e)
-    r = re.escape(r)
+  e = re.escape(e) if args.fixed or op == LINE_FIXED_SUB else e
   return '\n'.join([re.sub(e, r, line, flags=flags) for line in data.splitlines()])
 
 def file_sub(args, data, item, op, sep='/'):
   data = '\n'.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
-  if (op == 'R'):
+  if (op == FILE_REMOVE):
     e = item[2:].split(sep,1)[0]
     r = ''
   else:
     (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
+  e = re.escape(e) if args.fixed else e
   return re.sub(e, r, data, flags=flags)
 
 def file_only(args, data, item, op, sep='/'):
   data = '\n'.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
+  e = re.escape(e) if args.fixed else e
   matches = list(re.finditer(e, data, flags=flags))
   out = ''
   if len(matches):
@@ -228,6 +305,7 @@ class CustomFormatter(argparse.HelpFormatter):
           spaces = (len(line) - len(line.lstrip()))
           lines = lines + textwrap.wrap(line.lstrip(), text_width, initial_indent=' '*spaces, subsequent_indent=' '*spaces*2)
         else:
+          line = re.sub(r'\s{2,}', ' ', line)
           lines = lines + textwrap.wrap(line, text_width, initial_indent=indent, subsequent_indent=indent)
       return '\n'.join(lines) + '\n\n'  
 

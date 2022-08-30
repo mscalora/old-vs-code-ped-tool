@@ -8,11 +8,12 @@
       "name": "run ped",
       "type": "python",
       "request": "launch",
-      "program": "ped",
+      "program": "${workspaceFolder}/ped",
       "args": [
-        "-hf",
+        "-e",
+        "-f",
         "/tmp/test.txt",
-        "S/of.*be/-----"
+        "g/here"
       ],
       "console": "integratedTerminal",
       "justMyCode": true

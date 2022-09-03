@@ -25,6 +25,10 @@ LINE_TITLE = 't'
 FILE_TITLE = 'T'
 LINE_CAPITALIZE = 'c'
 FILE_CAPITALIZE = 'C'
+LINE_PREPEND = 'p'
+FILE_PREPEND = 'P'
+LINE_APPEND = 'a'
+FILE_APPEND = 'A'
 ALL_FILTERS = [FILTER, LINE_FILTER, EXCLUDE, LINE_EXCLUDE, LINE_ONLY, LINE_REMOVE]
 
 EPILOG = '''
@@ -46,9 +50,13 @@ EPILOG = '''
     u - transform match to upper case by line
     U - transform match to upper case across lines†
     t - transform match to title case by line
-    T - transform match to title case across lines†
+    T - transform match to title case across lines¹
     c - transform match to a capitalized sentence by line
     C - transform match to a capitalized sentence across lines†
+    a - append lines
+    A - append characters
+    p - prepend lines
+    P - prepend characters
 
 Commands are processed in the order they appear, usually
 consisting of a one character operation code and parameters
@@ -105,7 +113,7 @@ The `g`, `G`, `x`, `X`, `o` filter text line by line:
   `G` - keep only lines that completely match (excluding the line endings \\n and/or \\r) (like egrep -x)
   `x` - keep only lines that DON'T have a match anywhere on the line (like egrep -v)
   `X` - keep only lines that DON'T completely match (excluding the line endings \\n and/or \\r) (like egrep -v -x)
-  `o` - keep only the part(s) of lines that match, lines with no match are eliminated. (like egrep -o‡)
+  `o` - keep only the part(s) of lines that match, lines with no match are eliminated. (like egrep -o²)
 
 Removing matches 
 
@@ -121,12 +129,25 @@ specification for each of these operations. See: https://docs.python.org/3/libra
 
   $> ped -f story.txt -i 'U/fred\s+flintstone/'
 
-† you will often want to use the --dotall option so that a dot `.` will match any
+Appending & Prepending
+
+`a`, `p` are used to append and prepend a line³ based on the POSIX definition⁴ of lines.
+`A`, `P` are used to append and prepend characters to the input without regard to lines
+
+  $> ped -f shopping-list.txt 'a/eggs/'
+
+¹ you will often want to use the --dotall option so that a dot `.` will match any
 character including line separators like \\r and \\n.
 
-‡ there is a subtle difference, egrep -o will create multiple lines of output for multiple matches on
+² there is a subtle difference, egrep -o will create multiple lines of output for multiple matches on
 the same line
+
+³ embedded line termination characters will effectively append multiple lines
+
+⁴ POSIX defines a line as including a line ending character so a empty input (file) is considered to have zero lines 
 '''.strip()
+
+# ¹²³⁴⁵⁶⁷⁸⁹⁰
 
 DESCRIPTION = 'make edit to text file, line endings will be normalized to the os convention'
 def main():
@@ -142,7 +163,7 @@ def main():
       help='normalize line endings, even when using multiline')
   parser.add_argument('-F', '--fixed', dest='fixed', action='store_true', default=False, 
       help='treat regular expression as a fixed string by quoting all meta char')
-  parser.add_argument('-m', '--multiline', dest='multiline', action='store_const', default=False, 
+  parser.add_argument('-m', '--multiline', dest='multiline', action='store_const', default=0, 
       const=re.MULTILINE, help=r'`^` and `$` match beginning and end of lines, \A and \Z match beginning and end of file')
   parser.add_argument('-d', '--dotall', dest='dotall', action='store_const', default=0, 
       const=re.DOTALL, help='dot `.` will match any character including line endings')
@@ -150,6 +171,12 @@ def main():
       const=re.ASCII, help=r'ascii mode where \w, \W, \b, \B, \d, \D, \s and \S only match ASCII characters')
   parser.add_argument('-b', '--backup-path', metavar='DIR', dest='backup_dir', action='store', type=str, nargs=1,
       default='~/.ped-backups', help='backup directory')
+  parser.add_argument('-E' , '--line-ending', metavar='CHAR', dest='ending', action='store',
+      default=os.linesep, help='line ending to be used instead of platform default')
+  parser.add_argument('-M' , '--max-substitutions', metavar='NUMBER', dest='maxsub', action='store', type=int,
+      default=0, help='maximum total number of substitutions per command')
+  parser.add_argument('-L' , '--line-max-substitutions', metavar='NUMBER', dest='maxlinesub', action='store', type=int,
+      default=0, help='maximum total number of substitutions per line (for each command)')
   args = parser.parse_args()
 
   contents = sys.stdin.read() if args.path == '-' else get_file_contents(args.path)
@@ -170,6 +197,10 @@ def main():
       output = xform_lines(args, output, item, op, sep)
     elif op in [FILE_UPPER, FILE_LOWER, FILE_TITLE, FILE_CAPITALIZE]:
       output = xform_file(args, output, item, op, sep)
+    elif op in [LINE_APPEND, LINE_PREPEND]:
+      output = append_prepend_line(args, output, item, op, sep)
+    elif op in [FILE_APPEND, FILE_PREPEND]:
+      output = append_prepend_characters(args, output, item, op, sep)
     else:
       raise ValueError(f'Unknown command: "{item}" from the "{item}" command')
 
@@ -190,8 +221,21 @@ def main():
   else:
     print(output)
 
+def append_prepend_line(args, data, item, op, sep='/'):
+  lines = data.splitlines()
+  string = item[2:].split(sep,1)[0]
+  if op == LINE_APPEND:
+    lines.append(string)
+  else:
+    lines.insert(0, string)
+  return args.ending.join(lines)
+
+def append_prepend_characters(args, data, item, op, sep='/'):
+  string = item[2:].split(sep,1)[0]
+  return data + string
+
 def xform_file(args, data, item, op, sep='/'):
-  data = '\n'.join(data.splitlines()) if args.normalize else data
+  data = args.ending.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
   e = re.escape(e) if args.fixed else e
@@ -201,7 +245,18 @@ def xform_lines(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
   e = re.escape(e) if args.fixed else e
-  return '\n'.join([re.sub(e, lambda m: xform(m, op), line, flags=flags) for line in data.splitlines()])
+  if args.maxsub > 0:
+    maxsub = args.maxsub 
+    lines = data.splitlines()
+    for i, line in enumerate(lines):
+      max = maxsub if args.maxlinesub == 0 else min(maxsub, args.maxlinesub)
+      lines[i], count = re.subn(e, lambda m: xform(m, op), line, count=max, flags=flags)
+      maxsub -= count
+      if maxsub <= 0:
+        break
+    return args.ending.join(lines)
+  else:
+    return args.ending.join([re.sub(e, lambda m: xform(m, op), line, flags=flags) for line in data.splitlines()])
 
 def xform(match, op):
   if op == 'u' or op == 'U':
@@ -237,16 +292,27 @@ def filter_lines(args, data, item, op, sep='/'):
       out.append(re.sub(e, '', line, flags=flags))
     else:
       raise ValueError(f'Unknown command: "{op}" from the "{item}" command')
-  return '\n'.join(out)
+  return args.ending.join(out)
 
 def line_sub(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
   e = re.escape(e) if args.fixed or op == LINE_FIXED_SUB else e
-  return '\n'.join([re.sub(e, r, line, flags=flags) for line in data.splitlines()])
+  if args.maxsub > 0:
+    maxsub = args.maxsub
+    lines = data.splitlines()
+    for i, line in enumerate(lines):
+      max = maxsub if args.maxlinesub == 0 else min(maxsub, args.maxlinesub)
+      lines[i], count = re.subn(e, r, line, count=max, flags=flags)
+      maxsub -= count
+      if maxsub <= 0:
+        break
+    return args.ending.join(lines)
+  else:
+    return args.ending.join([re.sub(e, r, line, count=args.maxlinesub, flags=flags) for line in data.splitlines()])
 
 def file_sub(args, data, item, op, sep='/'):
-  data = '\n'.join(data.splitlines()) if args.normalize else data
+  data = args.ending.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   if (op == FILE_REMOVE):
     e = item[2:].split(sep,1)[0]
@@ -254,10 +320,10 @@ def file_sub(args, data, item, op, sep='/'):
   else:
     (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
   e = re.escape(e) if args.fixed else e
-  return re.sub(e, r, data, flags=flags)
+  return re.sub(e, r, data, count=args.maxsub, flags=flags)
 
 def file_only(args, data, item, op, sep='/'):
-  data = '\n'.join(data.splitlines()) if args.normalize else data
+  data = args.ending.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = item[2:].split(sep,1)[0]
   e = re.escape(e) if args.fixed else e
@@ -286,10 +352,9 @@ class CustomFormatter(argparse.HelpFormatter):
     last = True
     for line in lines[1:]:
       cur = line.strip() != '' and line[0] != ' '
-      new_text += (' ' if last and cur else '\n') + line
+      new_text += (' ' if last and cur else os.linesep) + line
       last = cur
     return new_text
-
 
   def _format_text(self, text):
     import textwrap
@@ -307,7 +372,7 @@ class CustomFormatter(argparse.HelpFormatter):
         else:
           line = re.sub(r'\s{2,}', ' ', line)
           lines = lines + textwrap.wrap(line, text_width, initial_indent=indent, subsequent_indent=indent)
-      return '\n'.join(lines) + '\n\n'  
+      return os.linesep.join(lines) + '\n\n'  
 
 if __name__ == '__main__':
   main()

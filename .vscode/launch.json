@@ -10,10 +10,22 @@
       "request": "launch",
       "program": "${workspaceFolder}/ped",
       "args": [
-        "-e",
         "-f",
-        "/tmp/test.txt",
-        "g/here"
+        "/tmp/test2.txt",
+        "S/$/•••here•••"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "run ped -M",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-M", "3",
+        "-f", "/tmp/test2.txt",
+        "s/i/•"
       ],
       "console": "integratedTerminal",
       "justMyCode": true

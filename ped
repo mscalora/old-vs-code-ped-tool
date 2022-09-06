@@ -29,6 +29,12 @@ LINE_PREPEND = 'p'
 FILE_PREPEND = 'P'
 LINE_APPEND = 'a'
 FILE_APPEND = 'A'
+LINE_INSERT = 'i'
+FILE_INSERT = 'I'
+LINE_REPLACE = 'y'
+FILE_REPLACE = 'Y'
+LINE_DELETE = 'd'
+FILE_DELETE = 'D'
 ALL_FILTERS = [FILTER, LINE_FILTER, EXCLUDE, LINE_EXCLUDE, LINE_ONLY, LINE_REMOVE]
 
 EPILOG = '''
@@ -57,6 +63,12 @@ EPILOG = '''
     A - append characters
     p - prepend lines
     P - prepend characters
+    i - insert by line number 'i/<pos>/str/' 1: after the first line, -1: before the last line
+    I - insert at character position  'I/<pos>/str/' 1: after the first char, -1: before the last char
+    y - replace lines 'y/<pos>/<count>/str/'
+    Y - replace characters 'y/<pos>/<count>/str/'
+    d - delete lines by line number and count
+    D - delete characters by position and count
 
 Commands are processed in the order they appear, usually
 consisting of a one character operation code and parameters
@@ -150,11 +162,11 @@ the same line
 # ¹²³⁴⁵⁶⁷⁸⁹⁰
 
 DESCRIPTION = 'make edit to text file, line endings will be normalized to the os convention'
-def main():
+def main(argv):
   parser = argparse.ArgumentParser(description=DESCRIPTION, epilog=EPILOG, formatter_class=CustomFormatter)
+  parser.add_argument('commands', metavar='COMMAND', type=str, nargs='*', help='edit command')
   parser.add_argument('-f', '--filepath', metavar='FILE', dest='path', action='store', type=str, 
       default='-', help='file to edit, `-` for stdin')
-  parser.add_argument('commands', metavar='COMMAND', type=str, nargs='+', help='edit command')
   parser.add_argument('-e', '--in-place', dest='inplace', action='store_true', default=False, 
       help='edit in place, update source file while making backup')
   parser.add_argument('-i', '--ignore-case', dest='insensitive', action='store_const', default=0, 
@@ -173,14 +185,16 @@ def main():
       default='~/.ped-backups', help='backup directory')
   parser.add_argument('-E' , '--line-ending', metavar='CHAR', dest='ending', action='store',
       default=os.linesep, help='line ending to be used instead of platform default')
+  parser.add_argument('-Z' , '--no-eof', dest='eof', action='store_false',
+      default=True, help='suppress line ending on last line/end of file')
   parser.add_argument('-M' , '--max-substitutions', metavar='NUMBER', dest='maxsub', action='store', type=int,
       default=0, help='maximum total number of substitutions per command')
   parser.add_argument('-L' , '--line-max-substitutions', metavar='NUMBER', dest='maxlinesub', action='store', type=int,
       default=0, help='maximum total number of substitutions per line (for each command)')
-  args = parser.parse_args()
+  args = parser.parse_args(argv)
 
   contents = sys.stdin.read() if args.path == '-' else get_file_contents(args.path)
-  output = contents
+  output = get_string(args, get_lines(args, contents)) if args.normalize else contents
 
   for item in args.commands:
     op = item[0]
@@ -201,6 +215,18 @@ def main():
       output = append_prepend_line(args, output, item, op, sep)
     elif op in [FILE_APPEND, FILE_PREPEND]:
       output = append_prepend_characters(args, output, item, op, sep)
+    elif op == LINE_INSERT:
+      output = insert_line(args, output, item, op, sep)
+    elif op == FILE_INSERT:
+      output = insert_chars(args, output, item, op, sep)
+    elif op == LINE_REPLACE:
+      output = replace_lines(args, output, item, op, sep)
+    elif op == FILE_REPLACE:
+      output = replace_chars(args, output, item, op, sep)
+    elif op == LINE_DELETE:
+      output = delete_lines(args, output, item, op, sep)
+    elif op == FILE_DELETE:
+      output = delete_chars(args, output, item, op, sep)
     else:
       raise ValueError(f'Unknown command: "{item}" from the "{item}" command')
 
@@ -219,44 +245,126 @@ def main():
     with open(args.path, 'w', encoding='utf-8') as f:
         f.write(output)
   else:
-    print(output)
+    sys.stdout.write(get_string(args, output))
+
+def join_lines(args, lines):
+  return args.ending.join(lines) + (args.ending if len(lines) and args.eof else '') 
+
+def get_lines(args, data):
+  return data if isinstance(data, list) else data.splitlines()
+
+def get_string(args, data):
+  return join_lines(args, data) if isinstance(data, list) else data
+
+def param_str(cmd, sep='/'):
+  str1, *_ = f'{cmd[2:]}{sep}'.split(sep, 2)
+  return str1
+
+def param_str_str(cmd, sep='/'):
+  (str1,str2,*_) = f'{cmd[2:]}{sep}'.split(sep,2)
+  return str1, str2
+
+def param_num_str(cmd, sep='/'):
+  (num,str,*_) = f'{cmd[2:]}{sep}'.split(sep,2)
+  num = num.strip()
+  if not re.match(r'^-?\d+$', num):
+    raise ValueError(f'Expected a numeric parameter: "{num}"')
+  return int(num), str
+
+def param_num_num_str(cmd, sep='/'):
+  (num1, num2, str, *_) = f'{cmd[2:]}{sep}'.split(sep,3)
+  num1 = num1.strip()
+  if not re.match(r'^-?\d+$', num1):
+    raise ValueError(f'Expected a numeric parameter: "{num1}"')
+  num2 = num2.strip()
+  if not re.match(r'^-?\d+$', num2):
+    raise ValueError(f'Expected a numeric parameter: "{num2}"')
+  return int(num1), int(num2), str
+
+def param_num_num(cmd, sep='/'):
+  (num1, num2,*_) = f'{cmd[2:]}{sep}'.split(sep,2)
+  num1 = num1.strip()
+  if not re.match(r'^-?\d+$', num1):
+    raise ValueError(f'Expected a numeric parameter: "{num1}"')
+  num2 = num2.strip()
+  if not re.match(r'^-?\d+$', num2):
+    raise ValueError(f'Expected a numeric parameter: "{num2}"')
+  return int(num1), int(num2)
+
+def insert_line(args, data, item, op, sep='/'):
+  lines = get_lines(args, data)
+  index, text = param_num_str(item, sep)
+  if index<0:
+    count = len(lines)
+    index = max(count + index, 0)
+  lines.insert(index, text)
+  return lines
+
+def insert_chars(args, data, item, op, sep='/'):
+  data = get_string(args, data)
+  index, text = param_num_str(item, sep)
+  if index<0:
+    count = len(data)
+    index = max(count + index, 0)
+  return data[:index] + text + data[index:]
+
+def replace_lines(args, data, item, op, sep='/'):
+  lines = get_lines(args, data)
+  start, count, string = param_num_num_str(item, sep)
+  return lines[:start] + string.splitlines() + lines[start + count:]
+
+def replace_chars(args, data, item, op, sep='/'):
+  buf = get_string(args, data)
+  start, count, string = param_num_num_str(item, sep)
+  return buf[:start] + string + buf[start + count:]
+
+def delete_lines(args, data, item, op, sep='/'):
+  lines = get_lines(args, data)
+  start, count = param_num_num(item, sep)
+  return lines[:start] + lines[start + count:]
+
+def delete_chars(args, data, item, op, sep='/'):
+  buf = get_string(args, data)
+  start, count = param_num_num(item, sep)
+  return buf[:start] + buf[start + count:]
 
 def append_prepend_line(args, data, item, op, sep='/'):
-  lines = data.splitlines()
-  string = item[2:].split(sep,1)[0]
+  lines = get_lines(args, data)
+  string = param_str(item, sep)
   if op == LINE_APPEND:
     lines.append(string)
   else:
     lines.insert(0, string)
-  return args.ending.join(lines)
+  return lines
 
 def append_prepend_characters(args, data, item, op, sep='/'):
-  string = item[2:].split(sep,1)[0]
-  return data + string
+  string = param_str(item, sep)
+  if op == FILE_APPEND:
+    return get_string(args, data) + string
+  return string + get_string(args, data)
 
 def xform_file(args, data, item, op, sep='/'):
-  data = args.ending.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
-  e = item[2:].split(sep,1)[0]
+  e = param_str(item, sep)
   e = re.escape(e) if args.fixed else e
   return re.sub(e, lambda m: xform(m, op), data, flags=flags)
 
 def xform_lines(args, data, item, op, sep='/'):
+  lines = get_lines(args, data)
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
-  e = item[2:].split(sep,1)[0]
+  e = param_str(item, sep)
   e = re.escape(e) if args.fixed else e
   if args.maxsub > 0:
     maxsub = args.maxsub 
-    lines = data.splitlines()
     for i, line in enumerate(lines):
       max = maxsub if args.maxlinesub == 0 else min(maxsub, args.maxlinesub)
       lines[i], count = re.subn(e, lambda m: xform(m, op), line, count=max, flags=flags)
       maxsub -= count
       if maxsub <= 0:
         break
-    return args.ending.join(lines)
+    return lines
   else:
-    return args.ending.join([re.sub(e, lambda m: xform(m, op), line, flags=flags) for line in data.splitlines()])
+    return [re.sub(e, lambda m: xform(m, op), line, flags=flags) for line in lines]
 
 def xform(match, op):
   if op == 'u' or op == 'U':
@@ -272,60 +380,58 @@ def xform(match, op):
 
 def filter_lines(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
-  e = item[2:].split(sep,1)[0]
+  e = param_str(item, sep)
   e = re.escape(e) if args.fixed else e
-  out = []
-  for line in data.splitlines():
+  output = []
+  for line in get_lines(args, data):
     if op == FILTER:
-      if re.search(e, line, flags=flags): out.append(line) 
+      if re.search(e, line, flags=flags): output.append(line) 
     elif op == LINE_FILTER:
-      if re.fullmatch(e, line, flags=flags): out.append(line)
+      if re.fullmatch(e, line, flags=flags): output.append(line)
     elif op == EXCLUDE:
-      if not re.search(e, line, flags=flags): out.append(line)
+      if not re.search(e, line, flags=flags): output.append(line)
     elif op == LINE_EXCLUDE:
-      if not re.fullmatch(e, line, flags=flags): out.append(line)
+      if not re.fullmatch(e, line, flags=flags): output.append(line)
     elif op == LINE_ONLY:
       matches = list(re.finditer(e, line, flags=flags))
       if len(matches):
-        out.append(''.join([match[0] for match in matches]))
+        output.append(''.join([match[0] for match in matches]))
     elif op == LINE_REMOVE:
-      out.append(re.sub(e, '', line, flags=flags))
+      output.append(re.sub(e, '', line, flags=flags))
     else:
       raise ValueError(f'Unknown command: "{op}" from the "{item}" command')
-  return args.ending.join(out)
+  return output
 
 def line_sub(args, data, item, op, sep='/'):
+  lines = get_lines(args, data)
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
-  (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
+  e, r = param_str_str(item, sep)
   e = re.escape(e) if args.fixed or op == LINE_FIXED_SUB else e
   if args.maxsub > 0:
     maxsub = args.maxsub
-    lines = data.splitlines()
     for i, line in enumerate(lines):
       max = maxsub if args.maxlinesub == 0 else min(maxsub, args.maxlinesub)
       lines[i], count = re.subn(e, r, line, count=max, flags=flags)
       maxsub -= count
       if maxsub <= 0:
         break
-    return args.ending.join(lines)
+    return lines
   else:
-    return args.ending.join([re.sub(e, r, line, count=args.maxlinesub, flags=flags) for line in data.splitlines()])
+    return [re.sub(e, r, line, count=args.maxlinesub, flags=flags) for line in lines]
 
 def file_sub(args, data, item, op, sep='/'):
-  data = args.ending.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   if (op == FILE_REMOVE):
-    e = item[2:].split(sep,1)[0]
+    e = param_str(item, sep)
     r = ''
   else:
-    (e,r,*_) = f'{item[2:]}{sep}'.split(sep,2)
+    e, r = param_str_str(item, sep)
   e = re.escape(e) if args.fixed else e
-  return re.sub(e, r, data, count=args.maxsub, flags=flags)
+  return re.sub(e, r, get_string(args, data), count=args.maxsub, flags=flags)
 
 def file_only(args, data, item, op, sep='/'):
-  data = args.ending.join(data.splitlines()) if args.normalize else data
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
-  e = item[2:].split(sep,1)[0]
+  e = param_str(item, sep)
   e = re.escape(e) if args.fixed else e
   matches = list(re.finditer(e, data, flags=flags))
   out = ''
@@ -375,4 +481,4 @@ class CustomFormatter(argparse.HelpFormatter):
       return os.linesep.join(lines) + '\n\n'  
 
 if __name__ == '__main__':
-  main()
+  main(sys.argv[1:])

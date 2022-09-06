@@ -11,8 +11,48 @@
       "program": "${workspaceFolder}/ped",
       "args": [
         "-f",
-        "/tmp/test2.txt",
-        "S/$/•••here•••"
+        "${workspaceFolder}/tests/data/long.txt",
+        "g/\\bt\\w+\\b"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "run ped -n",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-n",
+        "-f",
+        "/tmp/abcdef.txt",
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "run ped I",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-f",
+        "/tmp/abcdef.txt",
+        "I/-1/@"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "run ped -n I",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-n",
+        "-f",
+        "/tmp/abcdef.txt",
+        "I/-1/@"
       ],
       "console": "integratedTerminal",
       "justMyCode": true
@@ -26,6 +66,17 @@
         "-M", "3",
         "-f", "/tmp/test2.txt",
         "s/i/•"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "test commands",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/tests/command_tests.py",
+      "args": [
+        "TestCommands"
       ],
       "console": "integratedTerminal",
       "justMyCode": true

@@ -5,6 +5,7 @@
     "maxlinesub",
     "maxsub",
     "modulesdynamicdynamicclassesvarioussystems",
+    "resplit",
     "xform"
   ],
   "python.testing.unittestArgs": [

@@ -18,6 +18,45 @@
       "justMyCode": true
     },
     {
+      "name": "run ped bad re",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-f",
+        "${workspaceFolder}/tests/data/long.txt",
+        "s/(bad!"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "run ped file-not-found",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-f",
+        "${workspaceFolder}/tests/data/not-found.txt",
+        "s/test"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "run ped read-from-dir",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/ped",
+      "args": [
+        "-f",
+        "${workspaceFolder}/tests/data",
+        "s/test"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
       "name": "run ped -n",
       "type": "python",
       "request": "launch",

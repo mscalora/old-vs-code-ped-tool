@@ -2,9 +2,11 @@
 
 import argparse
 import datetime
+import enum
 import os
 import re
 import sys
+from enum import IntEnum
 
 LINE_SUB = 's'
 FILE_SUB = 'S'
@@ -36,6 +38,19 @@ FILE_REPLACE = 'Y'
 LINE_DELETE = 'd'
 FILE_DELETE = 'D'
 ALL_FILTERS = [FILTER, LINE_FILTER, EXCLUDE, LINE_EXCLUDE, LINE_ONLY, LINE_REMOVE]
+
+ANSI_BLACK = '\u001b[30m'
+ANSI_RED = '\u001b[31m'
+ANSI_GREEN = '\u001b[32m'
+ANSI_YELLOW = '\u001b[33m'
+ANSI_BLUE = '\u001b[34m'
+ANSI_MAGENTA = '\u001b[35m'
+ANSI_CYAN = '\u001b[36m'
+ANSI_WHITE = '\u001b[37m'
+ANSI_RESET = '\u001b[0m'
+ANSI_BOLD = '\u001b[1m'
+ANSI_UNDERLINE = '\u001b[4m'
+ANSI_REVERSE = '\u001b[7m'
 
 EPILOG = '''
 <mark-over>Commands:
@@ -134,7 +149,7 @@ commands are shorthand for for `s` and `S` with an empty replacement string.
 
 Case changing commands
 
-`l`, `L`, `u`, `U`, `t`, `T` replace matches with a lowercase, uppercase, title case 
+`l`, `L`, `u`, `U`, `t`, `T`, `c`, `C` replace matches with a lowercase, uppercase, title case 
 and capitalized sentence transformation of the matched text. The upper case versions 
 can match text across lines. Consult official python documentation for the technical 
 specification for each of these operations. See: https://docs.python.org/3/library/stdtypes.html#string-methods
@@ -147,6 +162,21 @@ Appending & Prepending
 `A`, `P` are used to append and prepend characters to the input without regard to lines
 
   $> ped -f shopping-list.txt 'a/eggs/'
+
+Line number operations
+
+`i`, `y`, `d` are used to insert, replace and delete lines by line number, negative values index from 
+the last line up. 0 positions before the first line, 1 positions after the first line, -1 positions
+before the last line. For the case of replace and delete the number of lines are specified with a second 
+numeric parameter. Replace `y` takes a third parameter of text to use for the replacement as literal text
+without any escaping supported or required. positions and/or counts are clamped to the range of data.
+
+  $> ped -f shopping-list.txt 'i/0/avocados/'   # same as prepend
+  $> ped -f shopping-list.txt 'i/1/eggs/'       # eggs are inserted as the second line
+  $> ped -f shopping-list.txt 'y/2/3/eggs'      # eggs replace the 3rd, 4th and 5th items on the list
+  $> ped -f shopping-list.txt 'y/-2/2/eggs'     # eggs replace the last two items on the list
+  $> ped -f shopping-list.txt 'd/5/1'           # delete 6th line
+  $> ped -f shopping-list.txt 'd/-2/2'          # delete last two lines
 
 ¹ you will often want to use the --dotall option so that a dot `.` will match any
 character including line separators like \\r and \\n.
@@ -191,6 +221,10 @@ def main(argv):
       default=0, help='maximum total number of substitutions per command')
   parser.add_argument('-L' , '--line-max-substitutions', metavar='NUMBER', dest='maxlinesub', action='store', type=int,
       default=0, help='maximum total number of substitutions per line (for each command)')
+  parser.add_argument('--force-color', dest='color', default=None, action='store_false',
+      help="force use of ANSI color adornment even if output stream does not appear to support it")    
+  parser.add_argument('--no-color', dest='color', default=None, action='store_true',
+      help="disable ANSI color adornment even if output stream appears to support it")    
   args = parser.parse_args(argv)
 
   contents = sys.stdin.read() if args.path == '-' else get_file_contents(args.path)
@@ -231,7 +265,8 @@ def main(argv):
       raise ValueError(f'Unknown command: "{item}" from the "{item}" command')
 
   if args.inplace:
-    backup_dir = os.path.expanduser(args.backup_dir)
+    raw_dir = args.backup_dir[0] if isinstance(args.backup_dir, list) else args.backup_dir
+    backup_dir = os.path.expanduser(raw_dir)
     if not os.path.isdir(backup_dir):
       os.makedirs(backup_dir)
     if not os.path.isdir(backup_dir):
@@ -243,7 +278,7 @@ def main(argv):
     with open(backup_path, 'w', encoding='utf-8') as f:
         f.write(contents)
     with open(args.path, 'w', encoding='utf-8') as f:
-        f.write(output)
+        f.write(get_string(args, output))
   else:
     sys.stdout.write(get_string(args, output))
 
@@ -256,8 +291,15 @@ def get_lines(args, data):
 def get_string(args, data):
   return join_lines(args, data) if isinstance(data, list) else data
 
+def get_normalized_lines(args, data):
+  return get_lines(args, get_string(args, data))
+
 def param_str(cmd, sep='/'):
   str1, *_ = f'{cmd[2:]}{sep}'.split(sep, 2)
+  return str1
+
+def param_regexp(cmd, sep='/'):
+  str1 = param_str(cmd, sep)
   return str1
 
 def param_str_str(cmd, sep='/'):
@@ -298,7 +340,7 @@ def insert_line(args, data, item, op, sep='/'):
     count = len(lines)
     index = max(count + index, 0)
   lines.insert(index, text)
-  return lines
+  return get_normalized_lines(args, lines) if '\n' in text else lines
 
 def insert_chars(args, data, item, op, sep='/'):
   data = get_string(args, data)
@@ -335,7 +377,7 @@ def append_prepend_line(args, data, item, op, sep='/'):
     lines.append(string)
   else:
     lines.insert(0, string)
-  return lines
+  return get_normalized_lines(args, lines) if '\n' in string else lines
 
 def append_prepend_characters(args, data, item, op, sep='/'):
   string = param_str(item, sep)
@@ -347,7 +389,7 @@ def xform_file(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e = param_str(item, sep)
   e = re.escape(e) if args.fixed else e
-  return re.sub(e, lambda m: xform(m, op), data, flags=flags)
+  return re.sub(e, lambda m: xform(m, op), data, count=args.maxsub, flags=flags)
 
 def xform_lines(args, data, item, op, sep='/'):
   lines = get_lines(args, data)
@@ -403,6 +445,7 @@ def filter_lines(args, data, item, op, sep='/'):
   return output
 
 def line_sub(args, data, item, op, sep='/'):
+  resplit = False
   lines = get_lines(args, data)
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
   e, r = param_str_str(item, sep)
@@ -413,11 +456,20 @@ def line_sub(args, data, item, op, sep='/'):
       max = maxsub if args.maxlinesub == 0 else min(maxsub, args.maxlinesub)
       lines[i], count = re.subn(e, r, line, count=max, flags=flags)
       maxsub -= count
+      if (count):
+        if '\n' in lines[i]:
+          resplit = True
       if maxsub <= 0:
         break
-    return lines
+    return get_normalized_lines(args, lines) if resplit else lines
   else:
-    return [re.sub(e, r, line, count=args.maxlinesub, flags=flags) for line in lines]
+    resplit = False
+    new_lines = []
+    for line in lines:
+      new_lines.append(new_line := re.sub(e, r, line, count=args.maxlinesub, flags=flags))
+      resplit = resplit or '\n' in new_line
+    return get_normalized_lines(args, new_lines) if resplit else new_lines
+    #return [re.sub(e, r, line, count=args.maxlinesub, flags=flags) for line in lines]
 
 def file_sub(args, data, item, op, sep='/'):
   flags = args.insensitive | args.multiline | args.ascii | args.dotall
@@ -442,12 +494,6 @@ def file_only(args, data, item, op, sep='/'):
 def get_file_contents(path):
   f = open(path, encoding="utf-8")
   data = f.read()
-  f.close()
-  return data
-
-def get_file_lines(path):
-  f = open(path, encoding="utf-8")
-  data = f.readlines()
   f.close()
   return data
 
@@ -480,5 +526,53 @@ class CustomFormatter(argparse.HelpFormatter):
           lines = lines + textwrap.wrap(line, text_width, initial_indent=indent, subsequent_indent=indent)
       return os.linesep.join(lines) + '\n\n'  
 
+class PedErrorTypes(IntEnum):
+  PED_IO_ERROR = 1
+  PED_RE_ERROR = 2
+  PED_OTHER_ERROR = 3
+
+class PedError(Exception):
+  def __init__(self, message, type):
+    super().__init__(message)
+    self.msg = message
+    self.type = type
+
+def use_color(args, stream=sys.stdout):
+    supported_platform = (sys.platform != 'win32' or 'ANSICON' in os.environ)
+    is_a_tty = hasattr(stream, 'isatty') and sys.stdout.isatty()
+    return args.color == True or (supported_platform and is_a_tty and args.color != False)
+
+def catching_main(argv):
+  try:
+    main(argv)
+  except re.error as e:
+    raise PedError(f'''Error: regular expression invalid - '''
+      f'''{e.msg if hasattr(e, "msg") else "???"}'''
+      f'''{f' : "{e.pattern}"' if hasattr(e, 'pattern') else ''}''', PedErrorTypes.PED_RE_ERROR) from e
+  except FileNotFoundError as e:
+    raise PedError(f'Error: file not found' + (f' - "{e.filename}"' if hasattr(e, 'filename') else ''), PedErrorTypes.PED_IO_ERROR) from e
+  except PermissionError as e:
+    raise PedError(f'Error: permissions error', PedErrorTypes.PED_IO_ERROR) from e
+  except OSError as e:
+    fn = f'''{"" if e.filename is None else f' "{e.filename}" '}'''
+    type = PedErrorTypes.PED_OTHER_ERROR if e.filename is None else PedErrorTypes.PED_IO_ERROR
+    raise PedError(f'Error: [{e.errno}] {e.strerror}{fn}', type) from e
+  except Exception as e:
+    if hasattr(e, 'strerror'):
+      msg = f'- {e.strerror}'
+    elif hasattr(e, 'msg'):
+      msg = f'- {e.msg}'
+    elif hasattr(e, 'message'):
+      msg = f'- {e.message}'
+    else:
+      msg = 'unknown'
+    raise PedError(f'Error: unexpected error - {msg}', PedErrorTypes.PED_OTHER_ERROR) from e
+
 if __name__ == '__main__':
-  main(sys.argv[1:])
+  rc = 0
+  try:
+    catching_main(sys.argv[1:])
+  except PedError as e:
+    print(e.msg, file=sys.stderr)
+    rc = e.type
+  sys.exit(int(rc))

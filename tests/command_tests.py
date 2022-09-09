@@ -4,29 +4,8 @@ import sys
 from io import StringIO
 from unittest.mock import patch
 import os
-#sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from importlib.util import spec_from_loader, module_from_spec
-from importlib.machinery import SourceFileLoader 
 
-ped_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ped')
-spec = spec_from_loader("ped", SourceFileLoader("ped",ped_path))
-ped = module_from_spec(spec)
-spec.loader.exec_module(ped)
-
-tests_path = os.path.dirname(__file__)
-data_path = os.path.join(tests_path, 'data')
-abcdef_path = os.path.join(data_path, 'abcdef.txt')
-abc_def_path = os.path.join(data_path, 'abc_def.txt')
-short_path = os.path.join(data_path, 'short.txt')
-short_uc_path = os.path.join(data_path, 'short_uc.txt')
-long_path = os.path.join(data_path, 'long.txt')
-
-short_text = 'this is a test\nof this thing here \nand you might be special.'
-
-def run_args(args):
-  with patch('sys.stdout', new = StringIO()) as output:
-    ped.main(args)
-    return output.getvalue()
+from test_utils import *
 
 class TestCommands(unittest.TestCase):
 
